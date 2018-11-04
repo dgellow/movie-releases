@@ -1,1 +1,6 @@
 runtime: go111
+
+env_variables:
+  HOST: https://movie-releases-bot.appspot.com
+  TELEGRAM_BOT_KEY:
+  THEMOVIEDB_API_KEY:
