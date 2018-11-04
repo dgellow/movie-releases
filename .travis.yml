@@ -1,0 +1,14 @@
+sudo: false
+language: go
+go:
+- 1.x
+- master
+
+install:
+- go get -v -u -t ./...
+
+script:
+- go vet ./...
+- go test -v -cover ./...
+- go build -v ./...
+
