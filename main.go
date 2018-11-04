@@ -96,7 +96,11 @@ func main() {
 		default:
 			text := "Found more than one match:\n"
 			for _, m := range results {
-				text += fmt.Sprintf("- %s (%d)\n", m.Title, m.ReleaseTime.Year())
+				year := fmt.Sprintf("%d", m.ReleaseTime.Year())
+				if m.ReleaseTime.IsZero() {
+					year = "unknown release date"
+				}
+				text += fmt.Sprintf("- %s (%s)\n", m.Title, year)
 			}
 			sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, text))
 		}
@@ -160,6 +164,9 @@ func queryMovies(apiKey, movieTitle string) (MovieAPIResults, error) {
 	}
 
 	for i := range data.Results {
+		if data.Results[i].ReleaseDate == "" {
+			continue
+		}
 		t, err := time.Parse("2006-01-02", data.Results[i].ReleaseDate)
 		data.Results[i].ReleaseTime = t
 		if err != nil {
