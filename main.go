@@ -17,11 +17,26 @@ import (
 	"github.com/pkg/errors"
 )
 
-var subscribeCommand = regexp.MustCompile("subscribe to (.+)")
+const region = "DE"
+
+var (
+	regionToEmoji = map[string]string{
+		"DE": "🇩🇪",
+	}
+
+	// 	subscribeCommand    = regexp.MustCompile("subscribe to (.+)")
+	releaseCommand     = regexp.MustCompile("releases? ?(exact)? (.+)")
+	releaseYearCommand = regexp.MustCompile("releases? ?(exact)? (.+) year ([0-9]{4})")
+
+	movieAPIKey = ""
+
+	subscriptionsMap = make(map[int64][]subscription)
+)
 
 func main() {
+	host := os.Getenv("HOST")
 	botKey := os.Getenv("TELEGRAM_BOT_KEY")
-	movieAPIKey := os.Getenv("THEMOVIEDB_API_KEY")
+	movieAPIKey = os.Getenv("THEMOVIEDB_API_KEY")
 
 	bot, err := telegram.NewBotAPI(botKey)
 	if err != nil {
@@ -32,7 +47,7 @@ func main() {
 
 	log.Printf("Authorized on account %s", bot.Self.UserName)
 
-	_, err = bot.SetWebhook(telegram.NewWebhook("https://6e8148f7.ngrok.io/" + bot.Token))
+	_, err = bot.SetWebhook(telegram.NewWebhook(host + "/" + bot.Token))
 	if err != nil {
 		log.Fatalf("failed to setup webhook: %s", err)
 	}
@@ -48,8 +63,6 @@ func main() {
 	updates := bot.ListenForWebhook("/" + bot.Token)
 	go http.ListenAndServe(":8080", nil)
 
-	subscriptionsMap := make(map[int64][]subscription)
-
 	for update := range updates {
 		if update.Message == nil {
 			continue
@@ -58,52 +71,75 @@ func main() {
 			continue
 		}
 
-		matches := subscribeCommand.FindStringSubmatch(strings.ToLower(update.Message.Text))
-		if len(matches) != 2 {
-			continue
-		}
+		text := strings.ToLower(update.Message.Text)
 
-		movieTitle := strings.ToLower(matches[1])
+		if matches := releaseYearCommand.FindStringSubmatch(text); matches != nil {
+			handleRelease(bot, update, matches)
+		} else if matches := releaseCommand.FindStringSubmatch(text); matches != nil {
+			handleRelease(bot, update, matches)
+		} else {
+			msgText := "Looking for information about movie releases? I can help with the following questions 😌\n" +
+				"`releases [exact] <movie title>`\n" +
+				"`releases [exact] <movie title> year <year of release>` (the year of release can be region specific)\n" +
+				"\n" +
+				"Examples:\n" +
+				"`release climax year 2018`\n" +
+				"`release exact julia`\n" +
+				"\n"
 
-		results, err := queryMovies(movieAPIKey, movieTitle)
-		if err != nil {
-			log.Fatalf("failed to search movies: %s", err)
-		}
-		sort.Sort(sort.Reverse(results))
-
-		switch len(results) {
-		case 0:
-			sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, "Nothing found :("))
-		case 1:
-			subs := subscriptionsMap[update.Message.Chat.ID]
-			found := false
-			for i := range subs {
-				if subs[i].title == movieTitle {
-					found = true
-					break
-				}
+			regionEmoji, ok := regionToEmoji[region]
+			if !ok {
+				regionEmoji = region
 			}
-			if !found {
-				subs = append(subs, subscription{
-					releaseDate: time.Now().Add(5 * time.Hour),
-					title:       movieTitle,
-				})
-			}
-			subscriptionsMap[update.Message.Chat.ID] = subs
 
-			text := fmt.Sprintf("Current subscriptions: %+v", subscriptionsMap[update.Message.Chat.ID])
-			sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, text))
-		default:
-			text := "Found more than one match:\n"
-			for _, m := range results {
-				year := fmt.Sprintf("%d", m.ReleaseTime.Year())
-				if m.ReleaseTime.IsZero() {
-					year = "unknown release date"
-				}
-				text += fmt.Sprintf("- %s (%s)\n", m.Title, year)
-			}
-			sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, text))
+			msgText += "Current region: " + regionEmoji
+
+			msgConfig := telegram.NewMessage(update.Message.Chat.ID, msgText)
+			msgConfig.ParseMode = "Markdown"
+			sendMsg(bot, msgConfig)
 		}
+	}
+}
+
+func handleRelease(bot *telegram.BotAPI, update telegram.Update, matches []string) {
+	exact := false
+	if matches[1] != "" {
+		exact = true
+	}
+
+	title := matches[2]
+	year := matches[3]
+
+	results, err := queryMovies(title, year)
+	if err != nil {
+		log.Fatalf("failed to search movies with year: %s", err)
+	}
+
+	if exact {
+		for i := range results {
+			if !strings.Contains(strings.ToLower(results[i].Title), title) {
+				results = append(results[:i], results[i+1:]...)
+			}
+		}
+	}
+
+	sendResults(bot, update, results)
+}
+
+func sendResults(bot *telegram.BotAPI, update telegram.Update, results MovieAPIResults) {
+	switch len(results) {
+	case 0:
+		sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, "No entry found 🤓"))
+	default:
+		text := "I found these entries 🍿:\n"
+		for _, m := range results {
+			year := fmt.Sprintf("%d", m.ReleaseTime.Year())
+			if m.ReleaseTime.IsZero() {
+				year = "unknown release date"
+			}
+			text += fmt.Sprintf("- %s (%s)\n", m.Title, year)
+		}
+		sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, text))
 	}
 }
 
@@ -131,13 +167,14 @@ func (r MovieAPIResults) Len() int           { return len(r) }
 func (r MovieAPIResults) Swap(i, j int)      { r[i], r[j] = r[j], r[i] }
 func (r MovieAPIResults) Less(i, j int) bool { return r[i].ReleaseTime.Before(r[j].ReleaseTime) }
 
-func queryMovies(apiKey, movieTitle string) (MovieAPIResults, error) {
-	u, err := url.Parse(fmt.Sprintf("https://api.themoviedb.org/3/search/movie?api_key=%s", apiKey))
+func queryMovies(movieTitle, year string) (MovieAPIResults, error) {
+	u, err := url.Parse(fmt.Sprintf("https://api.themoviedb.org/3/search/movie?api_key=%s", movieAPIKey))
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to parse url")
 	}
 	q := u.Query()
 	q.Set("query", movieTitle)
+	q.Set("year", year)
 	u.RawQuery = q.Encode()
 
 	res, err := http.Get(u.String())
@@ -151,7 +188,7 @@ func queryMovies(apiKey, movieTitle string) (MovieAPIResults, error) {
 	}
 
 	var data struct {
-		Results []MovieAPIResult `json:"results"`
+		Results MovieAPIResults `json:"results"`
 	}
 
 	b, err := ioutil.ReadAll(res.Body)
@@ -173,6 +210,7 @@ func queryMovies(apiKey, movieTitle string) (MovieAPIResults, error) {
 			return nil, errors.Wrap(err, "failed to parse release date")
 		}
 	}
+	sort.Sort(sort.Reverse(data.Results))
 
 	return data.Results, nil
 }
