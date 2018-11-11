@@ -108,7 +108,11 @@ func handleRelease(bot *telegram.BotAPI, update telegram.Update, matches []strin
 	}
 
 	title := matches[2]
-	year := matches[3]
+
+	var year string
+	if len(matches) == 4 {
+		year = matches[3]
+	}
 
 	results, err := queryMovies(title, year)
 	if err != nil {
