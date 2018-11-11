@@ -120,9 +120,10 @@ func handleRelease(bot *telegram.BotAPI, update telegram.Update, matches []strin
 	}
 
 	if exact {
-		for i := range results {
+		for i := 0; i < len(results); i++ {
 			if !strings.Contains(strings.ToLower(results[i].Title), title) {
 				results = append(results[:i], results[i+1:]...)
+				i--
 			}
 		}
 	}
