@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/datastore"
 	telegram "github.com/go-telegram-bot-api/telegram-bot-api"
 	"github.com/pkg/errors"
 )
@@ -24,19 +26,25 @@ var (
 		"DE": "🇩🇪",
 	}
 
-	// 	subscribeCommand    = regexp.MustCompile("subscribe to (.+)")
+	subscribeCommand   = regexp.MustCompile("subscribe to (.+)")
 	releaseCommand     = regexp.MustCompile("releases? ?(exact)? (.+)")
 	releaseYearCommand = regexp.MustCompile("releases? ?(exact)? (.+) year ([0-9]{4})")
 
-	movieAPIKey = ""
-
-	subscriptionsMap = make(map[int64][]subscription)
+	movieAPIKey     = ""
+	datastoreClient *datastore.Client
 )
 
 func main() {
 	host := os.Getenv("HOST")
 	botKey := os.Getenv("TELEGRAM_BOT_KEY")
 	movieAPIKey = os.Getenv("THEMOVIEDB_API_KEY")
+
+	ctx := context.TODO()
+	var err error
+	datastoreClient, err = datastore.NewClient(ctx, "")
+	if err != nil {
+		log.Fatalf("failed to create datastore client: %s", err)
+	}
 
 	bot, err := telegram.NewBotAPI(botKey)
 	if err != nil {
@@ -77,6 +85,8 @@ func main() {
 			handleRelease(bot, update, matches)
 		} else if matches := releaseCommand.FindStringSubmatch(text); matches != nil {
 			handleRelease(bot, update, matches)
+		} else if matches := subscribeCommand.FindStringSubmatch(text); matches != nil {
+			handleSubscribe(bot, update, matches)
 		} else {
 			msgText := "Looking for information about movie releases? I can help with the following questions 😌\n" +
 				"`releases [exact] <movie title>`\n" +
@@ -148,17 +158,62 @@ func sendResults(bot *telegram.BotAPI, update telegram.Update, results MovieAPIR
 	}
 }
 
+func handleSubscribe(bot *telegram.BotAPI, update telegram.Update, matches []string) {
+	movieTitle := matches[1]
+	results, err := queryMovies(movieTitle, "")
+	if err != nil {
+
+	}
+
+	now := time.Now()
+
+	var upcoming []MovieRelease
+	for _, res := range results {
+		if res.ReleaseTime.After(now) {
+			upcoming = append(upcoming, MovieRelease{
+				ID:          res.ID,
+				MovieTitle:  res.Title,
+				ReleaseDate: res.ReleaseTime,
+			})
+		}
+	}
+
+	var text string
+	switch len(upcoming) {
+	case 0:
+		text = "No movie releases found :("
+	case 1:
+		text = "Done!"
+	default:
+		text = "Found multiple movies, be more specific please."
+	}
+
+	sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, text))
+}
+
 func sendMsg(bot *telegram.BotAPI, msg telegram.MessageConfig) {
 	if _, err := bot.Send(msg); err != nil {
 		log.Fatalf("failed to send message: %s", err)
 	}
 }
 
-type subscription struct {
-	releaseDate time.Time
-	title       string
+const (
+	// EntityMovieReleases ...
+	EntityMovieReleases = "MovieReleases"
+)
+
+// MovieRelease ...
+type MovieRelease struct {
+	ID          int64
+	MovieTitle  string
+	ReleaseDate time.Time
+	Subscribers []struct {
+		Notified bool
+		ChatID   string
+	}
 }
 
+// MovieAPIResult ...
 type MovieAPIResult struct {
 	Title       string `json:"title"`
 	ReleaseDate string `json:"release_date"`
@@ -166,6 +221,7 @@ type MovieAPIResult struct {
 	ReleaseTime time.Time
 }
 
+// MovieAPIResults ...
 type MovieAPIResults []MovieAPIResult
 
 func (r MovieAPIResults) Len() int           { return len(r) }
