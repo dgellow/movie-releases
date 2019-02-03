@@ -100,10 +100,13 @@ func main() {
 			msgText := "Looking for information about movie releases? I can help with the following questions 😌\n" +
 				"`releases [exact] <movie title>`\n" +
 				"`releases [exact] <movie title> year <year of release>` (the year of release can be region specific)\n" +
+				"`subscribe to <movie title>`\n" +
+				"`list subscriptions` (the year of release can be region specific)\n" +
 				"\n" +
 				"Examples:\n" +
 				"`release climax year 2018`\n" +
 				"`release exact julia`\n" +
+				"`subscribe to Alita`\n" +
 				"\n"
 
 			regionEmoji, ok := regionToEmoji[region]
@@ -270,7 +273,7 @@ func handlelistSubscriptions(bot *telegram.BotAPI, update telegram.Update) {
 		text = "Your subscriptions are \n"
 		for _, sub := range subscriptions {
 			date := sub.ReleaseDate.Format("2 Jan 2006")
-			text += fmt.Sprintf("- %s %s", sub.MovieTitle, date)
+			text += fmt.Sprintf("- %s %s\n", sub.MovieTitle, date)
 		}
 	}
 	sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, text))
