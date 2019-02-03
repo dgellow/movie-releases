@@ -26,9 +26,10 @@ var (
 		"DE": "🇩🇪",
 	}
 
-	subscribeCommand   = regexp.MustCompile("subscribe to (.+)")
-	releaseCommand     = regexp.MustCompile("releases? ?(exact)? (.+)")
-	releaseYearCommand = regexp.MustCompile("releases? ?(exact)? (.+) year ([0-9]{4})")
+	subscribeCommand         = regexp.MustCompile("subscribe to (.+)")
+	releaseCommand           = regexp.MustCompile("releases? ?(exact)? (.+)")
+	releaseYearCommand       = regexp.MustCompile("releases? ?(exact)? (.+) year ([0-9]{4})")
+	listSubscriptionsCommand = regexp.MustCompile("list subscriptions?")
 
 	movieAPIKey     = ""
 	datastoreClient *datastore.Client
@@ -36,6 +37,7 @@ var (
 
 func main() {
 	host := os.Getenv("HOST")
+	port := os.Getenv("PORT")
 	botKey := os.Getenv("TELEGRAM_BOT_KEY")
 	movieAPIKey = os.Getenv("THEMOVIEDB_API_KEY")
 
@@ -73,7 +75,7 @@ func main() {
 
 	// Listen for messages to the bot
 	updates := bot.ListenForWebhook("/" + bot.Token)
-	go http.ListenAndServe(":8080", nil)
+	go http.ListenAndServe(fmt.Sprintf(":%s", port), nil)
 
 	// Handle bot messages
 	for update := range updates {
@@ -84,7 +86,7 @@ func main() {
 			continue
 		}
 
-		text := strings.ToLower(update.Message.Text)
+		text := strings.TrimSpace(strings.ToLower(update.Message.Text))
 
 		if matches := releaseYearCommand.FindStringSubmatch(text); matches != nil {
 			handleRelease(bot, update, matches)
@@ -92,6 +94,8 @@ func main() {
 			handleRelease(bot, update, matches)
 		} else if matches := subscribeCommand.FindStringSubmatch(text); matches != nil {
 			handleSubscribe(bot, update, matches)
+		} else if matches := listSubscriptionsCommand.FindStringSubmatch(text); matches != nil {
+			handlelistSubscriptions(bot, update)
 		} else {
 			msgText := "Looking for information about movie releases? I can help with the following questions 😌\n" +
 				"`releases [exact] <movie title>`\n" +
@@ -238,6 +242,37 @@ func handleSubscribe(bot *telegram.BotAPI, update telegram.Update, matches []str
 		text = "Found multiple movies, be more specific please."
 	}
 
+	sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, text))
+}
+
+func handlelistSubscriptions(bot *telegram.BotAPI, update telegram.Update) {
+	var records []MovieRelease
+	_, err := datastoreClient.GetAll(context.TODO(), datastore.NewQuery("MovieRelease"), &records)
+	if err != nil {
+		log.Fatalf("failed to get all subscriptions: %s", err)
+	}
+
+	var subscriptions []MovieRelease
+	for _, rec := range records {
+		for _, sub := range rec.Subscribers {
+			if sub.ChatID == update.Message.Chat.ID {
+				subscriptions = append(subscriptions, rec)
+				break
+			}
+		}
+	}
+
+	var text string
+	switch len(subscriptions) {
+	case 0:
+		text = "No subscriptions found"
+	default:
+		text = "Your subscriptions are \n"
+		for _, sub := range subscriptions {
+			date := sub.ReleaseDate.Format("2 Jan 2006")
+			text += fmt.Sprintf("- %s %s", sub.MovieTitle, date)
+		}
+	}
 	sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, text))
 }
 
