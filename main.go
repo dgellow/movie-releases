@@ -39,6 +39,7 @@ func main() {
 	botKey := os.Getenv("TELEGRAM_BOT_KEY")
 	movieAPIKey = os.Getenv("THEMOVIEDB_API_KEY")
 
+	// Create GCP datastore client
 	ctx := context.TODO()
 	var err error
 	datastoreClient, err = datastore.NewClient(ctx, "")
@@ -46,6 +47,7 @@ func main() {
 		log.Fatalf("failed to create datastore client: %s", err)
 	}
 
+	// Create telegram bot API client
 	bot, err := telegram.NewBotAPI(botKey)
 	if err != nil {
 		log.Fatalf("failed to create bot: %s", err)
@@ -55,6 +57,7 @@ func main() {
 
 	log.Printf("Authorized on account %s", bot.Self.UserName)
 
+	// Register telegram bot
 	_, err = bot.SetWebhook(telegram.NewWebhook(host + "/" + bot.Token))
 	if err != nil {
 		log.Fatalf("failed to setup webhook: %s", err)
@@ -68,9 +71,11 @@ func main() {
 		log.Printf("telegram callback failed: %s", info.LastErrorMessage)
 	}
 
+	// Listen for messages to the bot
 	updates := bot.ListenForWebhook("/" + bot.Token)
 	go http.ListenAndServe(":8080", nil)
 
+	// Handle bot messages
 	for update := range updates {
 		if update.Message == nil {
 			continue
@@ -162,7 +167,7 @@ func handleSubscribe(bot *telegram.BotAPI, update telegram.Update, matches []str
 	movieTitle := matches[1]
 	results, err := queryMovies(movieTitle, "")
 	if err != nil {
-
+		log.Fatalf("failed to search movies with year: %s", err)
 	}
 
 	now := time.Now()
@@ -183,6 +188,51 @@ func handleSubscribe(bot *telegram.BotAPI, update telegram.Update, matches []str
 	case 0:
 		text = "No movie releases found :("
 	case 1:
+		release := upcoming[0]
+
+		ctx := context.TODO()
+		key := datastore.NameKey("MovieRelease", fmt.Sprintf("%d", release.ID), nil)
+		_, err := datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
+			var txRelease MovieRelease
+
+			// Try to get a stored record
+			err := tx.Get(key, &txRelease)
+			if err != nil && err != datastore.ErrNoSuchEntity {
+				return err
+			}
+
+			// Handle case where record doesn't exist yet
+			if err == datastore.ErrNoSuchEntity {
+				txRelease = release
+			}
+
+			// Create subscriber
+			sub := Subscriber{
+				Notified: false,
+				ChatID:   update.Message.Chat.ID,
+			}
+
+			// Check if user already subscribed to movie release
+			for i := range txRelease.Subscribers {
+				if txRelease.Subscribers[i].ChatID == sub.ChatID {
+					// user found, do not update
+					return nil
+				}
+			}
+
+			txRelease.Subscribers = append(txRelease.Subscribers, sub)
+
+			_, err = tx.Put(key, &txRelease)
+			if err != nil {
+				return err
+			}
+
+			return nil
+		})
+		if err != nil {
+			log.Fatalf("failed to subscribe to movie release: %s", err)
+		}
+
 		text = "Done!"
 	default:
 		text = "Found multiple movies, be more specific please."
@@ -202,15 +252,18 @@ const (
 	EntityMovieReleases = "MovieReleases"
 )
 
+// Subscriber ...
+type Subscriber struct {
+	Notified bool
+	ChatID   int64
+}
+
 // MovieRelease ...
 type MovieRelease struct {
 	ID          int64
 	MovieTitle  string
 	ReleaseDate time.Time
-	Subscribers []struct {
-		Notified bool
-		ChatID   string
-	}
+	Subscribers []Subscriber
 }
 
 // MovieAPIResult ...

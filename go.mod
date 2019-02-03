@@ -8,6 +8,6 @@ require (
 	github.com/technoweenie/multipartstreamer v1.0.1 // indirect
 	go.opencensus.io v0.18.0 // indirect
 	google.golang.org/api v0.0.0-20181120235003-faade3cbb06a // indirect
-	google.golang.org/appengine v1.3.0
+	google.golang.org/appengine v1.3.0 // indirect
 	google.golang.org/genproto v0.0.0-20181109154231-b5d43981345b // indirect
 )
