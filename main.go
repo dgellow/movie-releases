@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -33,6 +34,7 @@ var (
 
 	movieAPIKey     = ""
 	datastoreClient *datastore.Client
+	bot             *telegram.BotAPI
 )
 
 func main() {
@@ -50,7 +52,7 @@ func main() {
 	}
 
 	// Create telegram bot API client
-	bot, err := telegram.NewBotAPI(botKey)
+	bot, err = telegram.NewBotAPI(botKey)
 	if err != nil {
 		log.Fatalf("failed to create bot: %s", err)
 	}
@@ -73,8 +75,12 @@ func main() {
 		log.Printf("telegram callback failed: %s", info.LastErrorMessage)
 	}
 
-	// Listen for messages to the bot
+	// Listen for messages received by the bot
 	updates := bot.ListenForWebhook("/" + bot.Token)
+
+	// Listen for trigger of notify task
+	http.HandleFunc("/tasks/notify", handleTaskNotify)
+
 	go http.ListenAndServe(fmt.Sprintf(":%s", port), nil)
 
 	// Handle bot messages
@@ -89,13 +95,13 @@ func main() {
 		text := strings.TrimSpace(strings.ToLower(update.Message.Text))
 
 		if matches := releaseYearCommand.FindStringSubmatch(text); matches != nil {
-			handleRelease(bot, update, matches)
+			handleRelease(update, matches)
 		} else if matches := releaseCommand.FindStringSubmatch(text); matches != nil {
-			handleRelease(bot, update, matches)
+			handleRelease(update, matches)
 		} else if matches := subscribeCommand.FindStringSubmatch(text); matches != nil {
-			handleSubscribe(bot, update, matches)
+			handleSubscribe(update, matches)
 		} else if matches := listSubscriptionsCommand.FindStringSubmatch(text); matches != nil {
-			handlelistSubscriptions(bot, update)
+			handlelistSubscriptions(update)
 		} else {
 			msgText := "Looking for information about movie releases? I can help with the following questions 😌\n" +
 				"`releases [exact] <movie title>`\n" +
@@ -118,12 +124,12 @@ func main() {
 
 			msgConfig := telegram.NewMessage(update.Message.Chat.ID, msgText)
 			msgConfig.ParseMode = "Markdown"
-			sendMsg(bot, msgConfig)
+			sendMsg(msgConfig)
 		}
 	}
 }
 
-func handleRelease(bot *telegram.BotAPI, update telegram.Update, matches []string) {
+func handleRelease(update telegram.Update, matches []string) {
 	exact := false
 	if matches[1] != "" {
 		exact = true
@@ -150,13 +156,13 @@ func handleRelease(bot *telegram.BotAPI, update telegram.Update, matches []strin
 		}
 	}
 
-	sendResults(bot, update, results)
+	sendResults(update, results)
 }
 
-func sendResults(bot *telegram.BotAPI, update telegram.Update, results MovieAPIResults) {
+func sendResults(update telegram.Update, results MovieAPIResults) {
 	switch len(results) {
 	case 0:
-		sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, "No entry found 🤓"))
+		sendMsg(telegram.NewMessage(update.Message.Chat.ID, "No entry found 🤓"))
 	default:
 		text := "I found these entries 🍿:\n"
 		for _, m := range results {
@@ -166,11 +172,11 @@ func sendResults(bot *telegram.BotAPI, update telegram.Update, results MovieAPIR
 			}
 			text += fmt.Sprintf("- %s (%s)\n", m.Title, year)
 		}
-		sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, text))
+		sendMsg(telegram.NewMessage(update.Message.Chat.ID, text))
 	}
 }
 
-func handleSubscribe(bot *telegram.BotAPI, update telegram.Update, matches []string) {
+func handleSubscribe(update telegram.Update, matches []string) {
 	movieTitle := matches[1]
 	results, err := queryMovies(movieTitle, "")
 	if err != nil {
@@ -245,10 +251,10 @@ func handleSubscribe(bot *telegram.BotAPI, update telegram.Update, matches []str
 		text = "Found multiple movies, be more specific please."
 	}
 
-	sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, text))
+	sendMsg(telegram.NewMessage(update.Message.Chat.ID, text))
 }
 
-func handlelistSubscriptions(bot *telegram.BotAPI, update telegram.Update) {
+func handlelistSubscriptions(update telegram.Update) {
 	var records []MovieRelease
 	_, err := datastoreClient.GetAll(context.TODO(), datastore.NewQuery("MovieRelease"), &records)
 	if err != nil {
@@ -276,10 +282,10 @@ func handlelistSubscriptions(bot *telegram.BotAPI, update telegram.Update) {
 			text += fmt.Sprintf("- %s %s\n", sub.MovieTitle, date)
 		}
 	}
-	sendMsg(bot, telegram.NewMessage(update.Message.Chat.ID, text))
+	sendMsg(telegram.NewMessage(update.Message.Chat.ID, text))
 }
 
-func sendMsg(bot *telegram.BotAPI, msg telegram.MessageConfig) {
+func sendMsg(msg telegram.MessageConfig) {
 	if _, err := bot.Send(msg); err != nil {
 		log.Fatalf("failed to send message: %s", err)
 	}
@@ -365,4 +371,38 @@ func queryMovies(movieTitle, year string) (MovieAPIResults, error) {
 	sort.Sort(sort.Reverse(data.Results))
 
 	return data.Results, nil
+}
+
+func handleTaskNotify(w http.ResponseWriter, r *http.Request) {
+	var records []MovieRelease
+	keys, err := datastoreClient.GetAll(context.TODO(), datastore.NewQuery("MovieRelease"), &records)
+	if err != nil {
+		log.Fatalf("failed to get all subscriptions: %s", err)
+	}
+
+	for idxRecord, record := range records {
+		now := time.Now()
+		inOneWeek := now.Add(7 * 24 * time.Hour)
+		if !(record.ReleaseDate.After(now) && record.ReleaseDate.Before(inOneWeek)) {
+			continue
+		}
+
+		for idxSub, sub := range record.Subscribers {
+			if sub.Notified {
+				continue
+			}
+
+			days := int(math.Ceil(record.ReleaseDate.Sub(now).Hours() / 24))
+			text := fmt.Sprintf("%s will be released in %d days.", record.MovieTitle, days)
+			sendMsg(telegram.NewMessage(sub.ChatID, text))
+
+			record.Subscribers[idxSub].Notified = true
+		}
+
+		key := keys[idxRecord]
+		_, err = datastoreClient.Put(context.TODO(), key, &record)
+		if err != nil {
+			log.Fatalf("failed to update movie release: key=%v", key)
+		}
+	}
 }

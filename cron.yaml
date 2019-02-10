@@ -1,0 +1,4 @@
+cron:
+- description: notify movie releases
+  url: /tasks/notify
+  schedule: every 5 minutes
