@@ -1,4 +1,5 @@
 cron:
 - description: notify movie releases
   url: /tasks/notify
-  schedule: every 5 minutes
+  schedule: every 6 hours from 08:00 to 21:00
+  timezone: Europe/Berlin
